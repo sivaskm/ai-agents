@@ -65,116 +65,66 @@ class ScraperState(BaseModel):
     )
 
 
-def load_state(state_path: Path = INCREMENTAL_STATE_FILE) -> ScraperState:
-    """
-    Load scraper state from the JSON file.
+class ScraperStateManager:
+    """Manages reading and writing the persistent scraper state file."""
 
-    Args:
-        state_path: Path to the state file.
+    def __init__(self, state_path: Path):
+        self.state_path = state_path
+        self.state = self._load_state()
 
-    Returns:
-        ScraperState object (defaults if file doesn't exist).
-    """
-    if not state_path.exists():
-        logger.info("No previous state found — first run (will scrape all bookmarks)")
-        return ScraperState()
+    def _load_state(self) -> ScraperState:
+        """Load scraper state from the JSON file."""
+        if not self.state_path.exists():
+            logger.info("No previous state found — first run (will scrape all bookmarks)")
+            return ScraperState()
 
-    try:
-        data = json.loads(state_path.read_text(encoding="utf-8"))
-        state = ScraperState(**data)
-        logger.info(
-            "Loaded state: latest_tweet_id={}, last_run={}, total={}",
-            state.latest_tweet_id,
-            state.last_run,
-            state.total_bookmarks_scraped,
+        try:
+            data = json.loads(self.state_path.read_text(encoding="utf-8"))
+            state = ScraperState(**data)
+            logger.info(
+                "Loaded state: latest_tweet={}, last_run={}, total={}",
+                state.latest_tweet_id or state.last_processed_tweet_id,
+                state.last_run,
+                state.total_bookmarks_scraped,
+            )
+            return state
+        except (json.JSONDecodeError, ValueError) as exc:
+            logger.warning(f"Failed to load state ({exc}). Starting fresh.")
+            return ScraperState()
+
+    def save_state(self, total: int = 0) -> None:
+        """Save the current state to the JSON file."""
+        self.state.total_bookmarks_scraped += total
+        self.state.last_run = datetime.now().isoformat()
+        
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        self.state_path.write_text(
+            json.dumps(self.state.model_dump(), indent=2, ensure_ascii=False),
+            encoding="utf-8",
         )
-        return state
-    except (json.JSONDecodeError, ValueError) as exc:
-        logger.warning("Failed to load state ({}). Starting fresh.", exc)
-        return ScraperState()
+        logger.info(
+            "State saved: latest_tweet={}, total={}",
+            self.state.latest_tweet_id or self.state.last_processed_tweet_id,
+            self.state.total_bookmarks_scraped,
+        )
 
-
-def save_state(
-    state: ScraperState,
-    state_path: Path = INCREMENTAL_STATE_FILE,
-) -> None:
-    """
-    Save scraper state to the JSON file.
-
-    Args:
-        state: The ScraperState to persist.
-        state_path: Path to the state file.
-    """
-    state_path.parent.mkdir(parents=True, exist_ok=True)
-
-    state_path.write_text(
-        json.dumps(state.model_dump(), indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    logger.info(
-        "State saved: latest_tweet_id={}, total={}",
-        state.latest_tweet_id,
-        state.total_bookmarks_scraped,
-    )
-
-
-def update_state_after_run(
-    tweet_id: Optional[str],
-    new_bookmarks_count: int,
-    state_path: Path = INCREMENTAL_STATE_FILE,
-    mode: str = "incremental"
-) -> ScraperState:
-    """
-    Update the state file after a successful scraping run.
-
-    In incremental mode: Sets latest_tweet_id to the newest tweet found.
-    In historical mode: Sets last_processed_tweet_id to the most recent tweet processed.
-    
-    Args:
-        tweet_id: The marker tweet ID (newest for incremental, just-processed for historical).
-        new_bookmarks_count: Number of new bookmarks scraped.
-        state_path: Path to the state file.
-        mode: "incremental" or "historical"
-
-    Returns:
-        The updated ScraperState.
-    """
-    state = load_state(state_path)
-    state.mode = mode
-
-    if tweet_id:
-        if mode == "incremental":
-            state.latest_tweet_id = tweet_id
+    def update_latest_tweet(self, tweet_id: str) -> None:
+        """Update the latest/last-processed tweet marker based on mode."""
+        if self.state.mode == "incremental":
+            self.state.latest_tweet_id = tweet_id
         else:
-            state.last_processed_tweet_id = tweet_id
+            self.state.last_processed_tweet_id = tweet_id
 
-    state.last_run = datetime.now().isoformat()
-    state.total_bookmarks_scraped += new_bookmarks_count
+    def is_tweet_already_processed(self, tweet_id: str) -> bool:
+        """
+        Check if a tweet ID is older than or equal to the incremental stop marker.
+        Uses numeric comparison of Twitter Snowflake IDs.
+        """
+        target = self.state.latest_tweet_id
+        if target is None:
+            return False
 
-    save_state(state, state_path)
-    return state
-
-
-def is_tweet_already_processed(tweet_id: str, latest_tweet_id: Optional[str]) -> bool:
-    """
-    Check if a tweet has already been processed in a previous run.
-
-    Uses numeric comparison of Twitter Snowflake IDs — they are
-    monotonically increasing, so a lower ID means an older tweet.
-
-    Args:
-        tweet_id: The tweet ID to check.
-        latest_tweet_id: The latest tweet ID from the previous run.
-
-    Returns:
-        True if the tweet was already processed (is older or equal).
-    """
-    if latest_tweet_id is None:
-        # First run — nothing has been processed yet
-        return False
-
-    try:
-        return int(tweet_id) <= int(latest_tweet_id)
-    except ValueError:
-        # Non-numeric IDs — fall back to string comparison
-        return tweet_id <= latest_tweet_id
+        try:
+            return int(tweet_id) <= int(target)
+        except ValueError:
+            return tweet_id <= target
