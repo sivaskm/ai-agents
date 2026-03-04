@@ -153,6 +153,52 @@ async def _extract_images_from_tweet(tweet: Locator) -> List[str]:
     return images
 
 
+async def _extract_links_from_tweet(tweet: Locator, tweet_text: str = "") -> List[str]:
+    """
+    Extract external destination links from a tweet.
+    
+    1. Scans ARIA [role="link"] elements for associated hrefs (used in OpenGraph/Cards).
+    2. Scans standard a[href] elements.
+    3. Scans the raw text via regex for inline URLs.
+    Filters out internal X/Twitter navigation and media CDN URLs.
+    """
+    links: List[str] = []
+    
+    # 1. Regex over inline cleartext
+    if tweet_text:
+        urls_in_text = re.findall(r'https?://[^\s\n\r]+', tweet_text)
+        for url in urls_in_text:
+            links.append(url)
+
+    # 2. Extract DOM-level links using precise role=link to avoid noise
+    try:
+        # X highly leverages role="link" for active interactive cards
+        anchors = await tweet.locator('a[href], [role="link"][href]').all()
+        for a in anchors:
+            href = await a.get_attribute("href")
+            if not href:
+                continue
+                
+            # Discard relative internal paths
+            if href.startswith("/"):
+                continue
+                
+            # Discard absolute internal paths
+            if "x.com" in href or "twitter.com" in href:
+                continue
+
+            # Discard media links
+            if "pbs.twimg.com" in href:
+                continue
+
+            links.append(href)
+    except Exception as exc:
+        logger.debug("Minor error extracting DOM links: {}", exc)
+
+    # Deduplicate before returning
+    return list(set(links))
+
+
 async def extract_from_detail_page(page: Page) -> Optional[Bookmark]:
     """
     Extract full tweet data from a tweet's detail page, with thread unrolling.
@@ -210,9 +256,11 @@ async def extract_from_detail_page(page: Page) -> Optional[Bookmark]:
     author = await _extract_author_from_tweet(main_tweet)
     main_text = await _extract_text_from_tweet(main_tweet)
     all_images = await _extract_images_from_tweet(main_tweet)
+    all_links = await _extract_links_from_tweet(main_tweet, main_text)
 
     # --- Thread detection with pagination: check consecutive same-author tweets ---
-    thread_texts: List[str] = [main_text] if main_text else []
+    # Fix: DO NOT insert the root main_text into the thread array. The thread array should only contain REPLIES.
+    thread_texts: List[str] = []
     seen_texts: Set[str] = {main_text} if main_text else set()
     is_thread = False
 
@@ -251,6 +299,12 @@ async def extract_from_detail_page(page: Page) -> Optional[Bookmark]:
                         if img not in all_images:
                             all_images.append(img)
                             
+                    # Collect links from thread tweets too
+                    reply_links = await _extract_links_from_tweet(reply_tweet, reply_text)
+                    for link in reply_links:
+                        if link not in all_links:
+                            all_links.append(link)
+                            
             except Exception:
                 continue
 
@@ -282,6 +336,7 @@ async def extract_from_detail_page(page: Page) -> Optional[Bookmark]:
         text=main_text,
         url=current_url,
         images=all_images,
+        links=all_links,
         is_thread=is_thread,
         thread=thread_texts if is_thread else [],
     )

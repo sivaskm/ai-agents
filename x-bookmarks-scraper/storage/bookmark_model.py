@@ -23,6 +23,7 @@ class Bookmark(BaseModel):
         images: List of image URLs embedded in the tweet.
         is_thread: Whether the bookmark is a thread (multiple tweets by same author).
         thread: List of text content for each tweet in the thread (if is_thread).
+        links: List of external URLs found within the tweet cards and text.
     """
 
     tweet_id: str = Field(..., description="Unique tweet status ID")
@@ -30,6 +31,7 @@ class Bookmark(BaseModel):
     text: str = Field(default="", description="Tweet text content")
     url: str = Field(default="", description="Permalink to the tweet")
     images: List[str] = Field(default_factory=list, description="Image URLs in the tweet")
+    links: List[str] = Field(default_factory=list, description="External URLs extracted from the tweet")
     is_thread: bool = Field(default=False, description="Whether this is a thread")
     thread: List[str] = Field(default_factory=list, description="Thread tweet texts in order")
 
@@ -41,6 +43,7 @@ class Bookmark(BaseModel):
                 "text": "Example tweet text here",
                 "url": "https://x.com/elonmusk/status/1891239123",
                 "images": ["https://pbs.twimg.com/media/example.jpg"],
+                "links": ["https://github.com/example"],
                 "is_thread": True,
                 "thread": [
                     "First tweet in thread",
