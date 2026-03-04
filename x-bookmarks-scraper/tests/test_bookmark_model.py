@@ -71,3 +71,42 @@ class TestBookmarkModel:
         json_str = bookmark.model_dump_json()
         assert '"tweet_id":"789"' in json_str.replace(" ", "")
         assert '"author":"bob"' in json_str.replace(" ", "")
+
+    def test_single_tweet_defaults(self):
+        """A single tweet should have is_thread=False and empty thread list."""
+        bookmark = Bookmark(tweet_id="100", text="Just a regular tweet")
+        assert bookmark.is_thread is False
+        assert bookmark.thread == []
+
+    def test_thread_bookmark(self):
+        """A thread should have is_thread=True and populated thread list."""
+        bookmark = Bookmark(
+            tweet_id="200",
+            author="alice",
+            text="First tweet in thread",
+            is_thread=True,
+            thread=[
+                "First tweet in thread",
+                "Second tweet continues",
+                "Third tweet wraps up",
+            ],
+        )
+        assert bookmark.is_thread is True
+        assert len(bookmark.thread) == 3
+        assert bookmark.thread[0] == "First tweet in thread"
+
+    def test_thread_serialization_roundtrip(self):
+        """Thread bookmarks should survive serialization roundtrip."""
+        original = Bookmark(
+            tweet_id="300",
+            author="bob",
+            text="Start of thread",
+            is_thread=True,
+            thread=["Start of thread", "Part 2", "Part 3"],
+            images=["https://pbs.twimg.com/media/t.jpg"],
+        )
+        data = original.model_dump()
+        restored = Bookmark(**data)
+        assert restored.is_thread is True
+        assert restored.thread == original.thread
+        assert restored == original
