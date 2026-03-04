@@ -96,20 +96,34 @@ async def _extract_author_from_tweet(tweet: Locator) -> str:
 async def _extract_text_from_tweet(tweet: Locator) -> str:
     """
     Extract full text content from a single tweet element.
-
     Uses text_content() for DOM-level text (not truncated).
-
-    Args:
-        tweet: Locator for a [data-testid="tweet"] element.
-
-    Returns:
-        The tweet text, or empty string.
+    Also checks for attached link cards or quote tweets.
     """
+    parts = []
     try:
+        # 1. Main tweet text
         text_elements = tweet.locator('[data-testid="tweetText"]')
         if await text_elements.count() > 0:
             text = await text_elements.first.text_content() or ""
-            return text.strip()
+            text = text.strip()
+            if text:
+                parts.append(text)
+                
+        # 2. Attached Cards, Articles, or Quote Tweets
+        # These are usually contained in div[role="link"] or card wrappers
+        cards = tweet.locator('div[role="link"], [data-testid="card.wrapper"]')
+        card_count = await cards.count()
+        for i in range(card_count):
+            card = cards.nth(i)
+            # inner_text() gets the visible text of the card (title, description, domain)
+            card_text = await card.inner_text()
+            if card_text:
+                # Clean up multiple newlines from card extraction
+                card_text = re.sub(r'\n+', '\n', card_text).strip()
+                if card_text and card_text not in parts:
+                    parts.append(f"[Card/Quote]\n{card_text}")
+                    
+        return "\n\n".join(parts).strip()
     except Exception:
         pass
     return ""
