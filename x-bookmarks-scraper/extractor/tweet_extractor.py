@@ -164,6 +164,13 @@ async def extract_from_detail_page(page: Page) -> Optional[Bookmark]:
         # Wait for tweets to load on the detail page
         first_tweet = page.locator('[data-testid="tweet"]').first
         await first_tweet.wait_for(state="visible", timeout=10000)
+        
+        # Wait for replies to load from the API and render in DOM
+        await page.wait_for_timeout(2500)
+        
+        # Scroll down slightly to trigger lazy loading of replies
+        await page.evaluate("window.scrollBy(0, 400)")
+        await page.wait_for_timeout(1000)
     except Exception as exc:
         logger.warning("Tweet detail page failed to load: {}", exc)
         return None
@@ -195,14 +202,17 @@ async def extract_from_detail_page(page: Page) -> Optional[Bookmark]:
     is_thread = False
 
     if tweet_count > 1:
+        logger.info("Detail page DOM has {} tweets. Starting thread unroll...", tweet_count)
         for i in range(1, tweet_count):
             reply_tweet = all_tweets.nth(i)
 
             try:
                 reply_author = await _extract_author_from_tweet(reply_tweet)
+                logger.info("Reply {}, author: {} (main: {})", i, reply_author, author)
 
                 # Stop if author changes — that's a conversation, not a thread
                 if reply_author != author:
+                    logger.info("Author changed to {}. Stopping thread unroll.", reply_author)
                     break
 
                 # Same author → part of the thread
