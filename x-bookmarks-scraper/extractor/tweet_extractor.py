@@ -311,6 +311,78 @@ async def _resolve_all_tco_links(page: Page, links: List[str]) -> List[str]:
     return list(dict.fromkeys(resolved_links))
 
 
+def _normalize_links(links: List[str], tweet_text: str = "") -> List[str]:
+    """
+    Normalize and deduplicate a list of extracted links.
+    
+    Rules applied (in order):
+    1. Remove any remaining t.co links (already resolved to destinations)
+    2. Remove truncated URLs ending in '…' if a full version exists
+    3. Remove card metadata canonical URLs that don't appear in tweet text
+       (e.g., card resolves tensortonic.com but tweet only mentions takeubackward.org)
+    4. Final deduplication on cleaned URLs
+    
+    Args:
+        links: Raw extracted + resolved links list.
+        tweet_text: The tweet text for cross-referencing which URLs the author mentioned.
+    
+    Returns:
+        Cleaned, deduplicated list of links.
+    """
+    if not links:
+        return []
+    
+    # Step 1: Remove any remaining t.co links
+    cleaned = [l for l in links if "t.co/" not in l]
+    
+    # Step 2: Remove truncated '…' URLs when a more complete version exists
+    # A truncated URL is one that ends with '…' (Unicode ellipsis)
+    truncated = [l for l in cleaned if l.endswith("…")]
+    non_truncated = [l for l in cleaned if not l.endswith("…")]
+    
+    for trunc_url in truncated:
+        # Strip the ellipsis to get the base prefix
+        base = trunc_url.rstrip("…")
+        # Check if any non-truncated URL starts with the same base
+        has_full_version = any(nt.startswith(base) for nt in non_truncated)
+        if not has_full_version:
+            # No full version exists — keep the truncated version (strip the …)
+            non_truncated.append(base)
+    
+    cleaned = non_truncated
+    
+    # Step 3: Remove card metadata canonical URLs that differ from tweet text URLs.
+    # If a link was NOT mentioned anywhere in the tweet text AND a different link
+    # from the same tweet WAS mentioned, the unmentioned one is likely a card redirect.
+    # Only apply if we have text-referenced links to compare against.
+    if tweet_text and len(cleaned) > 1:
+        text_lower = tweet_text.lower()
+        text_referenced = []
+        card_only = []
+        
+        for link in cleaned:
+            # Check if any significant part of the link appears in the tweet text
+            # Extract domain from URL for matching
+            url_for_check = link.lower().replace("https://", "").replace("http://", "").replace("www.", "")
+            domain = url_for_check.split("/")[0] if "/" in url_for_check else url_for_check
+            
+            # An x.com link (quote tweet permalink) is always kept
+            if "x.com/" in link:
+                text_referenced.append(link)
+            elif domain in text_lower or link.lower() in text_lower:
+                text_referenced.append(link)
+            else:
+                card_only.append(link)
+        
+        # Only remove card-only links if we have at least one text-referenced link
+        if text_referenced:
+            cleaned = text_referenced
+        # else keep all links (no text references found, don't throw anything away)
+    
+    # Step 4: Final deduplication preserving order
+    return list(dict.fromkeys(cleaned))
+
+
 async def extract_from_detail_page(page: Page) -> Optional[Bookmark]:
     """
     Extract full tweet data from a tweet's detail page, with thread unrolling.
@@ -445,6 +517,13 @@ async def extract_from_detail_page(page: Page) -> Optional[Bookmark]:
     # --- Resolve t.co shortened URLs to their actual destinations ---
     if all_links:
         all_links = await _resolve_all_tco_links(page, all_links)
+
+    # --- Normalize links: remove truncated duplicates, card metadata noise, t.co remnants ---
+    # Combine main text + thread texts for cross-referencing link mentions
+    full_text = main_text
+    if thread_texts:
+        full_text += "\n" + "\n".join(thread_texts)
+    all_links = _normalize_links(all_links, full_text)
 
     return Bookmark(
         tweet_id=tweet_id,
