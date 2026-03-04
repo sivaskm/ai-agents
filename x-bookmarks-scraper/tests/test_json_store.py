@@ -104,3 +104,48 @@ class TestJsonStore:
         assert isinstance(data, list)
         assert all("tweet_id" in item for item in data)
         assert all("images" in item for item in data)
+
+    def test_append_bookmark_new(self, tmp_path):
+        """append_bookmark should add a new bookmark and return True."""
+        from storage.json_store import append_bookmark
+
+        output = tmp_path / "bookmarks.json"
+        bookmark = Bookmark(tweet_id="100", author="new_user", text="New tweet")
+        result = append_bookmark(bookmark, output)
+        assert result is True
+
+        loaded = load_bookmarks(output)
+        assert len(loaded) == 1
+        assert loaded[0].tweet_id == "100"
+
+    def test_append_bookmark_duplicate(self, tmp_path, sample_bookmarks):
+        """append_bookmark should skip duplicates and return False."""
+        from storage.json_store import append_bookmark
+
+        output = tmp_path / "bookmarks.json"
+        save_bookmarks(sample_bookmarks, output)
+
+        duplicate = Bookmark(tweet_id="001", author="alice", text="Duplicate")
+        result = append_bookmark(duplicate, output)
+        assert result is False
+
+        loaded = load_bookmarks(output)
+        assert len(loaded) == 3  # unchanged
+
+    def test_get_saved_ids(self, tmp_path, sample_bookmarks):
+        """get_saved_ids should return the set of tweet IDs."""
+        from storage.json_store import get_saved_ids
+
+        output = tmp_path / "bookmarks.json"
+        save_bookmarks(sample_bookmarks, output)
+
+        ids = get_saved_ids(output)
+        assert ids == {"001", "002", "003"}
+
+    def test_get_saved_ids_no_file(self, tmp_path):
+        """get_saved_ids should return empty set when no file exists."""
+        from storage.json_store import get_saved_ids
+
+        output = tmp_path / "nonexistent.json"
+        ids = get_saved_ids(output)
+        assert ids == set()
