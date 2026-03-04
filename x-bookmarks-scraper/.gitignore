@@ -12,6 +12,7 @@ build/
 
 # Session & Data (user-specific)
 session.json
+credentials.enc
 data/
 
 # Logs

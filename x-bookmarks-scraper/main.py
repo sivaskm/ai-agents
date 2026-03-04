@@ -123,7 +123,7 @@ async def main() -> None:
         # --- Step 5: Extract bookmark data ---
         logger.info("Step 5: Extracting bookmark data")
         seen_ids: set[str] = set()
-        bookmarks = await extract_all_bookmarks(page, seen_ids)
+        bookmarks = await extract_all_bookmarks(page, seen_ids, max_tweets=settings.max_tweets)
 
         if not bookmarks:
             logger.warning("No bookmarks were extracted. The page may be empty or selectors may have changed.")

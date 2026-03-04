@@ -52,6 +52,16 @@ async def scroll_to_load_all(
     no_new_count = 0
     scroll_round = 0
 
+    # Check if we already have enough tweets without scrolling
+    initial_count = await page.locator(tweet_selector).count()
+    if max_tweets > 0 and initial_count >= max_tweets:
+        logger.info(
+            "Already have {} tweets on page (max_tweets={}). Skipping scroll.",
+            initial_count,
+            max_tweets,
+        )
+        return initial_count
+
     logger.info(
         "Starting infinite scroll (max_tweets={}, scroll_delay={:.1f}s, max_retries={})",
         max_tweets or "unlimited",

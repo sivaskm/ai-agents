@@ -2,14 +2,17 @@
 Interactive login flow for X (Twitter).
 
 Handles the multi-step login process:
-1. Navigate to login page
-2. Enter username and click next
-3. Enter password and submit
-4. Wait for successful redirect
+1. Check for saved encrypted credentials
+2. If not found, prompt for credentials in terminal and save them encrypted
+3. Navigate to login page
+4. Enter username and click next
+5. Enter password and submit
+6. Wait for successful redirect
+7. Delete saved credentials only after successful login
 
-Uses terminal prompts for credentials (getpass for password) to avoid
-storing sensitive data in config files. After successful login, the
-session is saved via session_manager.
+Uses encrypted credential caching so users aren't re-prompted on every
+retry or session expiration. Credentials are deleted only after
+successful login.
 """
 
 import getpass
@@ -20,17 +23,21 @@ from loguru import logger
 from utils.config import settings
 from utils.retry import retry
 from browser.session_manager import save_session
+from auth.credential_manager import (
+    save_credentials,
+    load_credentials,
+    delete_credentials,
+)
 
 
 @retry(max_attempts=2, base_delay=3.0, exceptions=(Exception,))
 async def perform_login(page: Page, context: BrowserContext) -> None:
     """
-    Execute the full X login flow with terminal-based credential input.
+    Execute the full X login flow with credential caching.
 
-    The X login flow is a multi-step process:
-    1. Username field → "Next" button
-    2. Password field → "Log in" button
-    3. Wait for redirect to home timeline
+    On first login, prompts for credentials and saves them encrypted.
+    On retries or subsequent runs, reuses saved credentials.
+    Credentials are deleted only after successful login.
 
     Args:
         page: The active Playwright page.
@@ -41,16 +48,25 @@ async def perform_login(page: Page, context: BrowserContext) -> None:
     """
     logger.info("Starting login flow")
 
-    # Prompt for credentials in terminal
-    print("\n" + "=" * 50)
-    print("  X (Twitter) Login Required")
-    print("=" * 50)
-    username = input("  Enter username or email: ").strip()
-    password = getpass.getpass("  Enter password: ")
-    print("=" * 50 + "\n")
+    # Try to load saved credentials first
+    saved = load_credentials()
+    if saved:
+        username, password = saved
+        logger.info("Using saved credentials for user: {}", username)
+    else:
+        # Prompt for credentials in terminal
+        print("\n" + "=" * 50)
+        print("  X (Twitter) Login Required")
+        print("=" * 50)
+        username = input("  Enter username or email: ").strip()
+        password = getpass.getpass("  Enter password: ")
+        print("=" * 50 + "\n")
 
-    if not username or not password:
-        raise ValueError("Username and password are required")
+        if not username or not password:
+            raise ValueError("Username and password are required")
+
+        # Save credentials encrypted for retry resilience
+        save_credentials(username, password)
 
     # Step 1: Navigate to the login page
     login_url = f"{settings.x_base_url}/i/flow/login"
@@ -117,6 +133,7 @@ async def perform_login(page: Page, context: BrowserContext) -> None:
                 "Check credentials and try again."
             )
 
-    # Step 6: Save session for future runs
+    # Step 6: Save session and delete credentials (login succeeded)
     await save_session(context)
-    logger.info("Login flow completed and session saved")
+    delete_credentials()
+    logger.info("Login flow completed, session saved, credentials cleared")

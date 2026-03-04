@@ -25,6 +25,7 @@ from storage.bookmark_model import Bookmark
 async def extract_all_bookmarks(
     page: Page,
     seen_ids: Set[str] | None = None,
+    max_tweets: int = 0,
 ) -> List[Bookmark]:
     """
     Extract bookmark data from all visible tweet elements on the page.
@@ -33,6 +34,7 @@ async def extract_all_bookmarks(
         page: The active Playwright page (should be on bookmarks).
         seen_ids: Optional set of already-processed tweet IDs to skip.
                   Will be updated in-place with newly extracted IDs.
+        max_tweets: Maximum number of bookmarks to extract (0 = all).
 
     Returns:
         List of newly extracted Bookmark objects (excludes seen_ids).
@@ -61,6 +63,11 @@ async def extract_all_bookmarks(
 
             seen_ids.add(bookmark.tweet_id)
             bookmarks.append(bookmark)
+
+            # Enforce max_tweets limit
+            if max_tweets > 0 and len(bookmarks) >= max_tweets:
+                logger.info("Reached max tweet extraction limit ({})", max_tweets)
+                break
 
         except Exception as exc:
             logger.warning("Failed to extract tweet #{}: {}", i, exc)
@@ -132,12 +139,21 @@ async def _extract_single_tweet(tweet: Locator) -> Bookmark | None:
         pass
 
     # --- Extract tweet text ---
+    # Use text_content() to get the full text from the DOM, including content
+    # that may be visually truncated with "Show more" in the timeline view.
+    # inner_text() only returns visible text, which can be truncated.
     text = ""
     try:
-        text_element = tweet.locator('[data-testid="tweetText"]')
-        if await text_element.count() > 0:
-            text = await text_element.first.inner_text()
-            text = text.strip()
+        text_elements = tweet.locator('[data-testid="tweetText"]')
+        text_count = await text_elements.count()
+        if text_count > 0:
+            # Collect text from all tweetText elements (handles threads/quote tweets)
+            text_parts = []
+            for idx in range(text_count):
+                part = await text_elements.nth(idx).text_content()
+                if part:
+                    text_parts.append(part.strip())
+            text = "\n\n".join(text_parts)
     except Exception:
         pass
 
