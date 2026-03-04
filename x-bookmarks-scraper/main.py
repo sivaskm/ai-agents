@@ -13,6 +13,7 @@ instead of scrolling through the entire history.
 
 Usage:
     uv run python main.py                          # incremental scrape (default 500 cap)
+    uv run python main.py --mode historical         # historical mode
     uv run python main.py --max-tweets 10           # quick test run
     uv run python main.py --headless                # headless mode
     uv run python main.py --full-scan               # ignore state, scrape everything
@@ -22,6 +23,7 @@ import argparse
 import asyncio
 import random
 import sys
+import time
 
 from loguru import logger
 
@@ -54,6 +56,13 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--mode",
+        type=str,
+        choices=["incremental", "historical"],
+        default="incremental",
+        help="Scraping mode: 'incremental' (only new) or 'historical' (all available)",
+    )
+    parser.add_argument(
         "--max-tweets",
         type=int,
         default=settings.max_tweets,
@@ -82,109 +91,120 @@ def parse_args() -> argparse.Namespace:
 
 async def scrape_bookmarks_loop(
     page,
+    mode: str,
     max_tweets: int,
-    latest_tweet_id: str | None,
+    stop_marker: str | None,
+    resume_marker: str | None,
 ) -> tuple[int, str | None]:
     """
     Incremental scroll + click + extract + save loop.
 
-    Processes bookmarks from newest to oldest. Stops when:
-    1. A previously processed tweet is encountered (incremental stop)
-    2. max_tweets limit is reached
-    3. No new tweets visible after max scroll retries
-
-    Args:
-        page: The active Playwright page on bookmarks.
-        max_tweets: Max tweets to collect (0 = unlimited).
-        latest_tweet_id: Last processed tweet ID (from state). None = first run.
-
-    Returns:
-        Tuple of (extracted_count, newest_tweet_id_this_run).
+    In incremental mode: Stops when hitting the stop_marker.
+    In historical mode: Fast forwards past the resume_marker then extracts everyone.
     """
-    # Load already-saved IDs for dedup within this session
     seen_ids = get_saved_ids(settings.output_path)
     if seen_ids:
-        logger.info("📂 {} bookmarks already saved from previous runs", len(seen_ids))
+        logger.info("📂 {} bookmarks already saved in output file", len(seen_ids))
 
     extracted_count = 0
     newest_tweet_id: str | None = None
     no_new_rounds = 0
-    max_no_new_rounds = settings.max_scroll_retries
     round_num = 0
     bookmarks_url = settings.bookmarks_url
-    hit_previous = False
+    hit_previous_incremental = False
+    
+    # State tracking for Historical Mode Resume
+    found_resume_marker = False if resume_marker else True 
+    start_time = time.time()
 
-    while not hit_previous:
+    while not hit_previous_incremental and round_num < settings.max_scroll_loops:
         round_num += 1
-        logger.info("─── Round {} ───", round_num)
+        logger.info("─── Scroll Loop {} ───", round_num)
+        
+        # Check overall runtime protection
+        if (time.time() - start_time) / 60.0 > settings.max_runtime_minutes:
+            logger.warning("Reached max runtime of {} minutes. Halting scrape.", settings.max_runtime_minutes)
+            break
 
         # Step 1: Find unseen tweets in current view
         new_tweet_links = await collect_visible_tweet_links(page, seen_ids)
 
         if not new_tweet_links:
             no_new_rounds += 1
-            logger.info(
-                "No new tweets visible ({}/{} rounds). Scrolling...",
-                no_new_rounds,
-                max_no_new_rounds,
-            )
-
-            if no_new_rounds >= max_no_new_rounds:
-                logger.info("No new tweets after {} rounds. All bookmarks collected.", max_no_new_rounds)
+            if no_new_rounds >= settings.max_scroll_retries:
+                logger.info("No new tweets after {} rounds. All bookmarks collected.", settings.max_scroll_retries)
                 break
-
             await _scroll_page(page)
             continue
 
-        # Reset no-new counter
         no_new_rounds = 0
-        logger.info("Found {} new tweets to process", len(new_tweet_links))
+        logger.info("Found {} visible tweets to evaluate", len(new_tweet_links))
 
         # Step 2: Process each tweet
         for tweet_info in new_tweet_links:
             tweet_id = tweet_info["tweet_id"]
 
-            # ── INCREMENTAL STOP: Have we reached a previously processed tweet? ──
-            if is_tweet_already_processed(tweet_id, latest_tweet_id):
-                logger.info(
-                    "🛑 Hit previously processed tweet ({}) — incremental stop!",
-                    tweet_id,
-                )
-                hit_previous = True
+            # Historical fast-forwarding logic
+            if not found_resume_marker:
+                if tweet_id == resume_marker:
+                    logger.info("▶ Found historical resume marker ({}). Beginning extraction.", tweet_id)
+                    found_resume_marker = True
+                else:
+                    logger.debug("Skipping tweet {} (hunting for resume marker {})", tweet_id, resume_marker)
+                
+                # We always add it to seen_ids so we don't accidentally evaluate it again while scrolling
+                seen_ids.add(tweet_id)
+                continue
+
+            # Incremental Stop logic
+            if mode == "incremental" and is_tweet_already_processed(tweet_id, stop_marker):
+                logger.info("🛑 Hit previously processed tweet ({}) — incremental stop!", tweet_id)
+                hit_previous_incremental = True
                 break
 
-            # Human-like delay between tweet opens (1.5–3s)
-            await asyncio.sleep(random.uniform(1.5, 3.0))
+            # Human-like delay between tweet opens (2–6s based on limits)
+            await asyncio.sleep(random.uniform(2.0, 6.0))
 
-            # Navigate to the tweet detail page for full content
-            bookmark = await click_tweet_and_extract(page, tweet_info, bookmarks_url)
+            # Exponential backoff retry logic for extracting
+            bookmark = None
+            for attempt in range(3):
+                bookmark = await click_tweet_and_extract(page, tweet_info, bookmarks_url)
+                if bookmark:
+                    break
+                else:
+                    backoff = 2 * (2 ** attempt)
+                    logger.warning("Extraction failed for {}, retrying in {}s (Attempt {}/3)", tweet_id, backoff, attempt+1)
+                    await asyncio.sleep(backoff)
 
             if bookmark:
-                # Track the newest tweet ID (first one processed = newest)
                 if newest_tweet_id is None:
                     newest_tweet_id = tweet_id
 
-                # Save immediately — incremental, crash-safe
                 was_new = append_bookmark(bookmark, settings.output_path)
                 if was_new:
                     extracted_count += 1
                     seen_ids.add(tweet_id)
+                    
+                    # FEATURE 2: Checkpoint/Resume System (Save state after each processed bookmark)
+                    state_file = Path(settings.state_dir) / (
+                        settings.historical_state_file if mode == "historical" else settings.incremental_state_file
+                    )
+                    # We pass the CURRENT tweet_id to be stored as the latest successful scrape
+                    update_state_after_run(tweet_id, 1, state_path=state_file, mode=mode)
             else:
-                # Mark as seen even on failure to avoid infinite retries
                 seen_ids.add(tweet_id)
 
-            # Check max_tweets cap
             if max_tweets > 0 and extracted_count >= max_tweets:
                 logger.info("📊 Reached max tweet limit ({}). Stopping.", max_tweets)
-                await page.goto(bookmarks_url, wait_until="domcontentloaded", timeout=30000)
+                await page.goto(bookmarks_url, wait_until="networkidle", timeout=30000)
                 return extracted_count, newest_tweet_id
 
-        if hit_previous:
+        if hit_previous_incremental:
             break
 
         # Step 3: Return to bookmarks and scroll for more
-        logger.info("↩ Returning to bookmarks page")
-        await page.goto(bookmarks_url, wait_until="domcontentloaded", timeout=30000)
+        logger.info("↩ Returning to bookmarks page and triggering next scroll")
+        await page.goto(bookmarks_url, wait_until="networkidle", timeout=30000)
 
         # Wait for tweets to load
         try:
@@ -232,20 +252,43 @@ async def main() -> None:
     # Initialize logging
     setup_logger(log_level=settings.log_level)
 
-    # Load scraper state for incremental mode
-    state = load_state()
-    latest_tweet_id = None if args.full_scan else state.latest_tweet_id
+    mode = args.mode
+
+    # Load scraper state based on mode
+    if mode == "historical":
+        state_file = Path(settings.state_dir) / settings.historical_state_file
+    else:
+        state_file = Path(settings.state_dir) / settings.incremental_state_file
+
+    state = load_state(state_file)
+    
+    # In incremental mode, we stop at latest_tweet_id
+    # In historical mode, we resume from last_processed_tweet_id (set to None if full-scan)
+    if mode == "incremental":
+        stop_marker = None if args.full_scan else state.latest_tweet_id
+        resume_marker = None
+    else:
+        stop_marker = None
+        resume_marker = None if args.full_scan else state.last_processed_tweet_id
 
     logger.info("=" * 60)
-    logger.info("X (Twitter) Bookmarks Scraper — Incremental Mode")
+    logger.info("X (Twitter) Bookmarks Scraper — Mode: {}", mode.upper())
     logger.info("=" * 60)
     logger.info("Max tweets: {}", settings.max_tweets)
     logger.info("Headless: {}", settings.headless)
     logger.info("Output: {}", settings.output_path)
-    if latest_tweet_id:
-        logger.info("Stop marker: tweet_id={} (last run: {})", latest_tweet_id, state.last_run)
+    
+    if mode == "incremental":
+        if stop_marker:
+            logger.info("Stop marker (incremental): tweet_id={} (last run: {})", stop_marker, state.last_run)
+        else:
+            logger.info("Incremental Mode: FULL SCAN (no previous state found)")
     else:
-        logger.info("Mode: FULL SCAN (no previous state)")
+        if resume_marker:
+            logger.info("Resume marker (historical): tweet_id={} (last index: {})", resume_marker, state.last_index)
+        else:
+            logger.info("Historical Mode: FULL DEEP SCAN (starting from newest)")
+            
     logger.info("=" * 60)
 
     async with BrowserManager(headless=settings.headless) as browser:
@@ -274,19 +317,29 @@ async def main() -> None:
         await navigate_to_bookmarks(page)
 
         # --- Step 4: Incremental scroll + extract loop ---
-        logger.info("Step 4: Starting incremental bookmark extraction")
+        logger.info("Step 4: Starting bookmark extraction loop")
+        # Support full-scan via args overriding safety bounds temporarily
+        operating_max = 0 if args.full_scan else settings.max_tweets
+        
         extracted_count, newest_tweet_id = await scrape_bookmarks_loop(
-            page, settings.max_tweets, latest_tweet_id,
+            page, 
+            mode,
+            operating_max, 
+            stop_marker,
+            resume_marker
         )
 
-        # --- Step 5: Update state ---
+        # --- Step 5: Synchronization ---
         if extracted_count > 0:
-            updated_state = update_state_after_run(newest_tweet_id, extracted_count)
-            logger.info(
-                "State updated: latest_tweet_id={}, total={}",
-                updated_state.latest_tweet_id,
-                updated_state.total_bookmarks_scraped,
-            )
+            logger.info("Session finished: total {} new bookmarks extracted", extracted_count)
+            
+            # Feature 8: State Reset After Historical Run
+            # If historical mode finished gathering all bookmarks and hit the end of the line (or stopped gracefully),
+            # we should update the incremental state so the daily cron job doesn't try to scrape everything.
+            if mode == "historical" and newest_tweet_id:
+                inc_state_file = Path(settings.state_dir) / settings.incremental_state_file
+                update_state_after_run(newest_tweet_id, 0, state_path=inc_state_file, mode="incremental")
+                logger.info("Synced historical newest tweet ID ({}) into incremental state.", newest_tweet_id)
         else:
             logger.info("No new bookmarks found — state unchanged")
 

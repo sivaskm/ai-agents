@@ -51,6 +51,8 @@ class Settings(BaseSettings):
 
     # Collection limits
     max_tweets: int = 500  # Safety cap per run (0 = unlimited)
+    max_scroll_loops: int = 500  # Hard stop for infinite scroll to prevent runaway
+    max_runtime_minutes: int = 120  # Safety cap for scraper duration
 
     # Output
     output_file: str = "bookmarks.json"
@@ -60,6 +62,8 @@ class Settings(BaseSettings):
 
     # State persistence
     state_dir: str = "state"
+    incremental_state_file: str = "incremental_state.json"
+    historical_state_file: str = "historical_state.json"
 
     @property
     def output_path(self) -> Path:

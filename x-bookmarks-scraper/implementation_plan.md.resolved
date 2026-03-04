@@ -21,10 +21,10 @@ Build a production-quality Python Playwright automation project to extract bookm
 - Configure loguru with file + console sinks, structured format
 
 #### [NEW] [utils/config.py](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/utils/config.py)
-- Pydantic `Settings` model loading from `.env` with sensible defaults
+- Pydantic [Settings](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/utils/config.py#14-73) model loading from [.env](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/.env) with sensible defaults
 
 #### [NEW] [utils/retry.py](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/utils/retry.py)
-- Generic `retry` decorator with configurable attempts, delay, and exception types
+- Generic [retry](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/utils/retry.py#17-83) decorator with configurable attempts, delay, and exception types
 
 ---
 
@@ -35,7 +35,7 @@ Build a production-quality Python Playwright automation project to extract bookm
 - Configurable headless mode via settings
 
 #### [NEW] [browser/session_manager.py](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/browser/session_manager.py)
-- Save/load cookies to `session.json`
+- Save/load cookies to [session.json](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/session.json)
 - Detect login state by checking for known logged-in element
 
 ---
@@ -70,21 +70,29 @@ Build a production-quality Python Playwright automation project to extract bookm
 
 ---
 
-### Data Storage
+### Data Storage & State
 
-#### [NEW] [storage/bookmark_model.py](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/storage/bookmark_model.py)
-- Pydantic `Bookmark` model: `author`, `text`, `url`, `images`
+#### [MODIFY] [storage/bookmark_model.py](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/storage/bookmark_model.py)
+- Pydantic [Bookmark](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/storage/bookmark_model.py#14-52) model: [author](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/extractor/tweet_extractor.py#73-94), [text](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/browser/browser_manager.py#86-92), `url`, [images](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/tests/test_bookmark_model.py#43-54), [thread](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/tests/test_bookmark_model.py#81-97)
 
-#### [NEW] [storage/json_store.py](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/storage/json_store.py)
-- Save/load bookmarks list to `data/bookmarks.json` with deduplication by URL
+#### [MODIFY] [storage/json_store.py](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/storage/json_store.py)
+- Save/load bookmarks list to [data/bookmarks.json](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/data/bookmarks.json) with deduplication by URL/ID
+
+#### [NEW] [state/scraper_state.py](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/state/scraper_state.py)
+- Supports split state: `incremental_state.json` and `historical_state.json`
+- Stores resume checkpoints, last processed tweet ID, and runtime tracking.
 
 ---
 
 ### Entry Point
 
-#### [NEW] [main.py](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/main.py)
+#### [MODIFY] [main.py](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/main.py)
 - Orchestrate: init browser → check session → login if needed → navigate → scroll → extract → save
-- Async main with proper cleanup
+- Two modes: `incremental` (latest only) vs `historical` (full deep scan)
+- Checkpoint resume logic: fast-scrolls to the last saved tweet in historical mode and continues
+- Rate Limits & Human delays: 2-6s per tweet, 1-3s between scroll blocks.
+- Time limit protection (`MAX_RUNTIME_MINUTES`)
+- On completion of `historical`, passes newest tweet ID to `incremental` state for seamless future runs.
 
 ---
 
@@ -100,7 +108,7 @@ Build a production-quality Python Playwright automation project to extract bookm
 ### Automated Tests
 
 #### [NEW] [tests/test_bookmark_model.py](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/tests/test_bookmark_model.py)
-- Unit tests for `Bookmark` model validation (valid/invalid data)
+- Unit tests for [Bookmark](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/storage/bookmark_model.py#14-52) model validation (valid/invalid data)
 
 #### [NEW] [tests/test_json_store.py](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/tests/test_json_store.py)
 - Unit tests for JSON save/load and deduplication logic using temp files
@@ -109,7 +117,7 @@ Build a production-quality Python Playwright automation project to extract bookm
 - Unit tests for the retry decorator (success, exhaustion, specific exception types)
 
 #### [NEW] [tests/test_config.py](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/tests/test_config.py)
-- Unit tests for config defaults and `.env` override loading
+- Unit tests for config defaults and [.env](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/.env) override loading
 
 **Run all tests with:**
 ```
@@ -121,7 +129,7 @@ uv run python -m pytest tests/ -v
 
 ### Manual Verification (User)
 1. Run `uv run python main.py`
-2. If no `session.json` exists, it will prompt for X username and password — enter valid credentials
+2. If no [session.json](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/session.json) exists, it will prompt for X username and password — enter valid credentials
 3. Observe logs showing login, navigation to bookmarks, scroll progress, and extraction count
-4. Confirm `data/bookmarks.json` is created with the correct structure
+4. Confirm [data/bookmarks.json](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/data/bookmarks.json) is created with the correct structure
 5. Re-run and verify session reuse (no login prompt)

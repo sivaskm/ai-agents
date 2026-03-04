@@ -1,0 +1,72 @@
+# X Bookmarks Scraper - Build Tasks
+
+## Planning
+- [x] Create implementation plan and get approval
+
+## Project Setup
+- [x] Initialize uv project and install dependencies
+- [x] Create project directory structure
+
+## Core Modules
+- [x] [utils/logger.py](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/utils/logger.py) - Loguru-based logging setup
+- [x] [utils/config.py](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/utils/config.py) - Environment configuration via pydantic
+- [x] [utils/retry.py](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/utils/retry.py) - Retry utility decorator
+- [x] [.env](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/.env) - Default environment variables
+
+## Browser & Session
+- [x] [browser/browser_manager.py](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/browser/browser_manager.py) - Playwright browser lifecycle management
+- [x] [browser/session_manager.py](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/browser/session_manager.py) - Cookie-based session persistence
+
+## Authentication
+- [x] [auth/login_handler.py](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/auth/login_handler.py) - Interactive login flow
+
+## Navigation
+- [x] [navigation/bookmarks_page.py](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/navigation/bookmarks_page.py) - Bookmarks page navigation
+- [x] [navigation/scroll_manager.py](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/navigation/scroll_manager.py) - Infinite scroll system
+
+## Data Extraction
+- [x] [extractor/tweet_extractor.py](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/extractor/tweet_extractor.py) - Tweet text/author/URL/images extraction (merged parser)
+
+## Data Storage
+- [x] [storage/bookmark_model.py](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/storage/bookmark_model.py) - Pydantic bookmark model with tweet_id
+- [x] [storage/json_store.py](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/storage/json_store.py) - JSON file persistence with dedup by tweet_id
+
+## Main Entry Point
+- [x] [main.py](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/main.py) - Orchestration entry point
+
+## Documentation
+- [x] [README.md](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/README.md) - Setup and usage instructions
+
+## V2 Fixes
+- [x] Redesign extraction to click into each tweet for full content
+- [x] Incremental save after each bookmark extraction
+- [x] Merge scroll + extract into unified loop
+- [x] Fix Windows asyncio pipe error
+- [x] Run tests and verify
+- [x] Git commit
+
+## V3: Incremental Scraping
+- [/] Create [state/scraper_state.py](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/state/scraper_state.py) — load/save latest_tweet_id + last_run
+- [ ] Update scrape loop — stop when hitting previously processed tweet
+- [ ] Add human-like delays (1.5–3s random waits)
+- [ ] Default volume cap (500 max per run)
+- [x] Run tests and verify
+- [x] Git commit
+
+## V4: Thread Unrolling & Edge Cases
+- [x] Update Bookmark model with [thread](file:///c:/Users/sksiv/Workspace/ai-agents/x-bookmarks-scraper/tests/test_bookmark_model.py#81-97) field
+- [x] Detect threads on detail page (consecutive same-author tweets)
+- [x] Unroll thread content with scrolling pagination (V4.1)
+- [x] Extract attached Cards/Articles/Quote Tweets (V4.2)
+- [x] Update tests
+- [x] Git commit
+
+## V5: Historical Download
+- [ ] Create `historical_state.json` and `incremental_state.json`
+- [ ] Add CLI mode switch (`--mode incremental` vs `--mode historical`)
+- [ ] Update main loop to resume from checkpoint
+- [ ] Implement robust human-like delays (2-6s) and mouse variations
+- [ ] Wrap extraction with exponential backoff retries (3 max)
+- [ ] Update `page.goto` to use `wait_until="networkidle"`
+- [ ] Add hard limit constants (`MAX_SCROLL_LOOPS`, `MAX_RUNTIME_MINUTES`)
+- [ ] Graceful stop & state transfer back to incremental

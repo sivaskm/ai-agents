@@ -25,25 +25,35 @@ from typing import Optional
 from pydantic import BaseModel, Field
 from loguru import logger
 
+from utils.config import settings
+
 # Default location for the state file
-STATE_DIR = Path("state")
-STATE_FILE = STATE_DIR / "scraper_state.json"
+STATE_DIR = Path(settings.state_dir)
+INCREMENTAL_STATE_FILE = STATE_DIR / settings.incremental_state_file
+HISTORICAL_STATE_FILE = STATE_DIR / settings.historical_state_file
 
 
 class ScraperState(BaseModel):
     """
-    Persistent state for incremental scraping.
-
-    Attributes:
-        latest_tweet_id: The newest tweet ID processed in the last run.
-                         Used as the stop marker for the next run.
-        last_run: ISO timestamp of the last successful scrape.
-        total_bookmarks_scraped: Cumulative count across all runs.
+    Persistent state for scraping runs.
+    Supports both incremental (daily updates) and historical (deep archive) modes.
     """
 
     latest_tweet_id: Optional[str] = Field(
         default=None,
-        description="Newest tweet ID from the last run (stop marker)",
+        description="Newest tweet ID from the last run (stop marker for incremental)",
+    )
+    last_processed_tweet_id: Optional[str] = Field(
+        default=None,
+        description="The last successfully scraped tweet ID (resume marker for historical)",
+    )
+    last_index: int = Field(
+        default=0,
+        description="The index position of the last scraped tweet for resume reference",
+    )
+    mode: str = Field(
+        default="incremental",
+        description="The mode this state file belongs to (incremental or historical)",
     )
     last_run: Optional[str] = Field(
         default=None,
@@ -55,7 +65,7 @@ class ScraperState(BaseModel):
     )
 
 
-def load_state(state_path: Path = STATE_FILE) -> ScraperState:
+def load_state(state_path: Path = INCREMENTAL_STATE_FILE) -> ScraperState:
     """
     Load scraper state from the JSON file.
 
@@ -86,7 +96,7 @@ def load_state(state_path: Path = STATE_FILE) -> ScraperState:
 
 def save_state(
     state: ScraperState,
-    state_path: Path = STATE_FILE,
+    state_path: Path = INCREMENTAL_STATE_FILE,
 ) -> None:
     """
     Save scraper state to the JSON file.
@@ -109,28 +119,34 @@ def save_state(
 
 
 def update_state_after_run(
-    newest_tweet_id: Optional[str],
+    tweet_id: Optional[str],
     new_bookmarks_count: int,
-    state_path: Path = STATE_FILE,
+    state_path: Path = INCREMENTAL_STATE_FILE,
+    mode: str = "incremental"
 ) -> ScraperState:
     """
     Update the state file after a successful scraping run.
 
-    Sets the latest_tweet_id to the newest tweet found in this run,
-    updates the last_run timestamp, and increments the total count.
-
+    In incremental mode: Sets latest_tweet_id to the newest tweet found.
+    In historical mode: Sets last_processed_tweet_id to the most recent tweet processed.
+    
     Args:
-        newest_tweet_id: The newest tweet ID scraped in this run.
-        new_bookmarks_count: Number of new bookmarks scraped in this run.
+        tweet_id: The marker tweet ID (newest for incremental, just-processed for historical).
+        new_bookmarks_count: Number of new bookmarks scraped.
         state_path: Path to the state file.
+        mode: "incremental" or "historical"
 
     Returns:
         The updated ScraperState.
     """
     state = load_state(state_path)
+    state.mode = mode
 
-    if newest_tweet_id:
-        state.latest_tweet_id = newest_tweet_id
+    if tweet_id:
+        if mode == "incremental":
+            state.latest_tweet_id = tweet_id
+        else:
+            state.last_processed_tweet_id = tweet_id
 
     state.last_run = datetime.now().isoformat()
     state.total_bookmarks_scraped += new_bookmarks_count
