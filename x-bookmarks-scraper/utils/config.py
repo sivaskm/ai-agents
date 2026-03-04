@@ -50,13 +50,16 @@ class Settings(BaseSettings):
     max_scroll_retries: int = 5
 
     # Collection limits
-    max_tweets: int = 0  # 0 = unlimited
+    max_tweets: int = 500  # Safety cap per run (0 = unlimited)
 
     # Output
     output_file: str = "bookmarks.json"
 
     # Logging
     log_level: str = "INFO"
+
+    # State persistence
+    state_dir: str = "state"
 
     @property
     def output_path(self) -> Path:

@@ -26,7 +26,7 @@ class TestConfig:
         assert config.headless is False
         assert config.scroll_delay == 2.0
         assert config.max_scroll_retries == 5
-        assert config.max_tweets == 0
+        assert config.max_tweets == 500
         assert config.output_file == "bookmarks.json"
         assert config.log_level == "INFO"
 
