@@ -14,8 +14,7 @@ build/
 session.json
 credentials.enc
 data/
-state/
-
+*.json
 # Logs
 logs/
 

@@ -197,40 +197,65 @@ async def extract_from_detail_page(page: Page) -> Optional[Bookmark]:
     main_text = await _extract_text_from_tweet(main_tweet)
     all_images = await _extract_images_from_tweet(main_tweet)
 
-    # --- Thread detection: check consecutive same-author tweets ---
+    # --- Thread detection with pagination: check consecutive same-author tweets ---
     thread_texts: List[str] = [main_text] if main_text else []
+    seen_texts: Set[str] = {main_text} if main_text else set()
     is_thread = False
 
-    if tweet_count > 1:
-        logger.info("Detail page DOM has {} tweets. Starting thread unroll...", tweet_count)
-        for i in range(1, tweet_count):
-            reply_tweet = all_tweets.nth(i)
+    max_scrolls = 15  # Prevent infinite loops on very long threads
+    no_new_tweets_rounds = 0
 
+    for scroll_round in range(max_scrolls):
+        all_tweets = page.locator('[data-testid="tweet"]')
+        current_count = await all_tweets.count()
+        found_new_in_round = False
+        author_changed = False
+
+        for i in range(current_count):
+            reply_tweet = all_tweets.nth(i)
             try:
                 reply_author = await _extract_author_from_tweet(reply_tweet)
-                logger.info("Reply {}, author: {} (main: {})", i, reply_author, author)
-
-                # Stop if author changes — that's a conversation, not a thread
+                
+                # Skip ads or elements where author extraction failed
+                if reply_author == "unknown":
+                    continue
+                    
                 if reply_author != author:
-                    logger.info("Author changed to {}. Stopping thread unroll.", reply_author)
+                    logger.info("Author changed to {}. End of thread replies.", reply_author)
+                    author_changed = True
                     break
 
-                # Same author → part of the thread
                 reply_text = await _extract_text_from_tweet(reply_tweet)
-                if reply_text:
+                if reply_text and reply_text not in seen_texts:
                     thread_texts.append(reply_text)
-
-                # Collect images from thread tweets too
-                reply_images = await _extract_images_from_tweet(reply_tweet)
-                for img in reply_images:
-                    if img not in all_images:
-                        all_images.append(img)
-
+                    seen_texts.add(reply_text)
+                    found_new_in_round = True
+                    
+                    # Collect images from thread tweets too
+                    reply_images = await _extract_images_from_tweet(reply_tweet)
+                    for img in reply_images:
+                        if img not in all_images:
+                            all_images.append(img)
+                            
             except Exception:
-                break
+                continue
 
-        # It's a thread if we found more than one tweet from the same author
-        is_thread = len(thread_texts) > 1
+        if author_changed:
+            break
+            
+        if not found_new_in_round:
+            no_new_tweets_rounds += 1
+            if no_new_tweets_rounds >= 2:
+                # No new thread tweets found after 2 scrolls -> end of thread
+                break
+        else:
+            no_new_tweets_rounds = 0
+            
+        # Scroll down to load the next chunk of the thread
+        await page.evaluate("window.scrollBy(0, 800)")
+        await page.wait_for_timeout(1500)
+
+    is_thread = len(thread_texts) > 1
 
     if is_thread:
         logger.info(
