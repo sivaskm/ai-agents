@@ -24,6 +24,7 @@ import asyncio
 import random
 import sys
 import time
+from pathlib import Path
 
 from loguru import logger
 
@@ -196,7 +197,7 @@ async def scrape_bookmarks_loop(
 
             if max_tweets > 0 and extracted_count >= max_tweets:
                 logger.info("📊 Reached max tweet limit ({}). Stopping.", max_tweets)
-                await page.goto(bookmarks_url, wait_until="networkidle", timeout=30000)
+                await page.goto(bookmarks_url, wait_until="domcontentloaded", timeout=30000)
                 return extracted_count, newest_tweet_id
 
         if hit_previous_incremental:
@@ -204,7 +205,7 @@ async def scrape_bookmarks_loop(
 
         # Step 3: Return to bookmarks and scroll for more
         logger.info("↩ Returning to bookmarks page and triggering next scroll")
-        await page.goto(bookmarks_url, wait_until="networkidle", timeout=30000)
+        await page.goto(bookmarks_url, wait_until="domcontentloaded", timeout=30000)
 
         # Wait for tweets to load
         try:
