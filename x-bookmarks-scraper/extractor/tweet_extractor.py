@@ -98,6 +98,7 @@ async def _extract_text_from_tweet(tweet: Locator) -> str:
     Extract full text content from a single tweet element.
     Uses text_content() for DOM-level text (not truncated).
     Also checks for attached link cards or quote tweets.
+    Distinguishes between [Quote Tweet] (internal X) and [Link Card] (external resource).
     """
     parts = []
     try:
@@ -110,18 +111,33 @@ async def _extract_text_from_tweet(tweet: Locator) -> str:
                 parts.append(text)
                 
         # 2. Attached Cards, Articles, or Quote Tweets
-        # These are usually contained in div[role="link"] or card wrappers
-        cards = tweet.locator('div[role="link"], [data-testid="card.wrapper"]')
-        card_count = await cards.count()
-        for i in range(card_count):
-            card = cards.nth(i)
-            # inner_text() gets the visible text of the card (title, description, domain)
+        # card.wrapper = external link cards (GitHub, YouTube, articles)
+        card_wrappers = tweet.locator('[data-testid="card.wrapper"]')
+        card_wrapper_count = await card_wrappers.count()
+        for i in range(card_wrapper_count):
+            card = card_wrappers.nth(i)
             card_text = await card.inner_text()
             if card_text:
-                # Clean up multiple newlines from card extraction
                 card_text = re.sub(r'\n+', '\n', card_text).strip()
                 if card_text and card_text not in parts:
-                    parts.append(f"[Card/Quote]\n{card_text}")
+                    parts.append(f"[Link Card]\n{card_text}")
+        
+        # div[role="link"] without card.wrapper = quote tweets (internal X references)
+        div_role_links = tweet.locator('div[role="link"]')
+        div_count = await div_role_links.count()
+        for i in range(div_count):
+            div_link = div_role_links.nth(i)
+            # Skip if this is inside a card.wrapper (already handled above)
+            is_inside_card = await div_link.evaluate(
+                'el => !!el.closest(\'[data-testid="card.wrapper"]\')'
+            )
+            if is_inside_card:
+                continue
+            div_text = await div_link.inner_text()
+            if div_text:
+                div_text = re.sub(r'\n+', '\n', div_text).strip()
+                if div_text and div_text not in parts:
+                    parts.append(f"[Quote Tweet]\n{div_text}")
                     
         return "\n\n".join(parts).strip()
     except Exception:
@@ -157,10 +173,13 @@ async def _extract_links_from_tweet(tweet: Locator, tweet_text: str = "") -> Lis
     """
     Extract external destination links from a tweet.
     
-    1. Scans ARIA [role="link"] elements for associated hrefs (used in OpenGraph/Cards).
-    2. Scans standard a[href] elements.
-    3. Scans the raw text via regex for inline URLs.
-    Filters out internal X/Twitter navigation and media CDN URLs.
+    Strategy:
+    1. Regex over inline text for explicit URLs.
+    2. Scan a[href] and [role="link"][href] for t.co and external links.
+    3. Extract Quote Tweet permalinks from div[role="link"] (internal X refs).
+    4. Extract card.wrapper nested a[href] links.
+    
+    Filters out navigation, media CDN, and duplicate URLs.
     """
     links: List[str] = []
     
@@ -170,9 +189,8 @@ async def _extract_links_from_tweet(tweet: Locator, tweet_text: str = "") -> Lis
         for url in urls_in_text:
             links.append(url)
 
-    # 2. Extract DOM-level links using precise role=link to avoid noise
+    # 2. Extract DOM-level links from a[href] elements
     try:
-        # X highly leverages role="link" for active interactive cards
         anchors = await tweet.locator('a[href], [role="link"][href]').all()
         for a in anchors:
             href = await a.get_attribute("href")
@@ -194,9 +212,103 @@ async def _extract_links_from_tweet(tweet: Locator, tweet_text: str = "") -> Lis
             links.append(href)
     except Exception as exc:
         logger.debug("Minor error extracting DOM links: {}", exc)
+    
+    # 3. Extract Quote Tweet permalinks from div[role="link"] (no href on div itself)
+    try:
+        div_role_links = await tweet.locator('div[role="link"]').all()
+        for div_link in div_role_links:
+            # Skip if inside card.wrapper (handled by step 2 above)
+            is_inside_card = await div_link.evaluate(
+                'el => !!el.closest(\'[data-testid="card.wrapper"]\')'
+            )
+            if is_inside_card:
+                continue
+            
+            # Look for nested a[href*="/status/"] — this is the quoted tweet permalink
+            nested_permalinks = await div_link.locator('a[href*="/status/"]').all()
+            for a in nested_permalinks:
+                href = await a.get_attribute("href")
+                if href and re.match(r'^/[^/]+/status/\d+', href):
+                    full_url = f"https://x.com{href}"
+                    if full_url not in links:
+                        links.append(full_url)
+                    break  # Only need the first permalink per quote tweet
+    except Exception as exc:
+        logger.debug("Minor error extracting quote tweet links: {}", exc)
+
+    # 4. Explicitly scan card.wrapper for nested a[href] (catches t.co links in cards)
+    try:
+        card_wrappers = await tweet.locator('[data-testid="card.wrapper"]').all()
+        for card in card_wrappers:
+            card_anchors = await card.locator('a[href]').all()
+            for a in card_anchors:
+                href = await a.get_attribute("href")
+                if href and not href.startswith("/"):
+                    if "x.com" not in href and "twitter.com" not in href and "pbs.twimg.com" not in href:
+                        links.append(href)
+    except Exception as exc:
+        logger.debug("Minor error extracting card wrapper links: {}", exc)
 
     # Deduplicate before returning
     return list(set(links))
+
+
+async def _resolve_tco_url(page: Page, tco_url: str) -> str:
+    """
+    Resolve a t.co shortened URL to its final destination.
+    Opens a new tab in the same browser context, navigates to the t.co URL
+    (which triggers a 301/302 redirect), reads the final URL, then closes the tab.
+    
+    Args:
+        page: The active Playwright page (used to access the browser context).
+        tco_url: A t.co shortened URL.
+    
+    Returns:
+        The resolved destination URL, or the original t.co URL on failure.
+    """
+    resolve_page = None
+    try:
+        context = page.context
+        resolve_page = await context.new_page()
+        # Navigate to t.co — the browser will follow the redirect automatically
+        response = await resolve_page.goto(tco_url, wait_until="domcontentloaded", timeout=10000)
+        resolved = resolve_page.url
+        if resolved and resolved != tco_url and "t.co" not in resolved:
+            logger.debug("Resolved {} → {}", tco_url, resolved)
+            return resolved
+    except Exception as exc:
+        logger.debug("Failed to resolve t.co URL {}: {}", tco_url, exc)
+    finally:
+        if resolve_page:
+            try:
+                await resolve_page.close()
+            except Exception:
+                pass
+    return tco_url
+
+
+async def _resolve_all_tco_links(page: Page, links: List[str]) -> List[str]:
+    """
+    Resolve all t.co shortened URLs in a links list to their final destinations.
+    Non-t.co links are passed through unchanged.
+    
+    Args:
+        page: The active Playwright page.
+        links: List of URLs (may contain t.co shortened URLs).
+    
+    Returns:
+        List of URLs with t.co links replaced by their final destinations.
+    """
+    resolved_links: List[str] = []
+    for link in links:
+        if "t.co/" in link:
+            resolved = await _resolve_tco_url(page, link)
+            resolved_links.append(resolved)
+        else:
+            resolved_links.append(link)
+    
+    # Deduplicate after resolution (different t.co links may point to same destination)
+    return list(dict.fromkeys(resolved_links))
 
 
 async def extract_from_detail_page(page: Page) -> Optional[Bookmark]:
@@ -323,12 +435,16 @@ async def extract_from_detail_page(page: Page) -> Optional[Bookmark]:
         await page.evaluate("window.scrollBy(0, 800)")
         await page.wait_for_timeout(1500)
 
-    is_thread = len(thread_texts) > 1
+    is_thread = len(thread_texts) > 0
 
     if is_thread:
         logger.info(
-            "🧵 Thread detected! {} tweets by @{}", len(thread_texts), author
+            "🧵 Thread detected! {} reply tweets by @{}", len(thread_texts), author
         )
+
+    # --- Resolve t.co shortened URLs to their actual destinations ---
+    if all_links:
+        all_links = await _resolve_all_tco_links(page, all_links)
 
     return Bookmark(
         tweet_id=tweet_id,
