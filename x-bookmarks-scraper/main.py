@@ -112,13 +112,12 @@ async def scrape_bookmarks_loop(
     no_new_rounds = 0
     round_num = 0
     bookmarks_url = settings.bookmarks_url
-    hit_previous_incremental = False
     
     # State tracking for Historical Mode Resume
     found_resume_marker = False if resume_marker else True 
     start_time = time.time()
 
-    while not hit_previous_incremental and round_num < settings.max_scroll_loops:
+    while round_num < settings.max_scroll_loops:
         round_num += 1
         logger.info("─── Scroll Loop {} ───", round_num)
         
@@ -160,11 +159,10 @@ async def scrape_bookmarks_loop(
                 seen_ids.add(tweet_id)
                 continue
 
-            # Incremental Stop logic
+            # In incremental mode, if we hit a previously processed tweet,
+            # mark it as already saved so it gets removed from UI below
             if mode == "incremental" and is_tweet_already_processed(tweet_id, stop_marker):
-                logger.info("🛑 Hit previously processed tweet ({}) — incremental stop!", tweet_id)
-                hit_previous_incremental = True
-                break
+                is_already_saved = True
 
             # Human-like delay between tweet opens (2–6s based on limits)
             await asyncio.sleep(random.uniform(2.0, 6.0))
@@ -222,9 +220,6 @@ async def scrape_bookmarks_loop(
                 logger.info("📊 Reached max tweet limit ({}). Stopping.", max_tweets)
                 await page.goto(bookmarks_url, wait_until="domcontentloaded", timeout=30000)
                 return extracted_count, newest_tweet_id
-
-        if hit_previous_incremental:
-            break
 
         # Step 3: Return to bookmarks and scroll for more
         logger.info("↩ Returning to bookmarks page and triggering next scroll")
