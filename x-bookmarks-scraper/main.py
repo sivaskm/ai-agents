@@ -98,10 +98,15 @@ async def scrape_bookmarks_loop(
     resume_marker: str | None,
 ) -> tuple[int, str | None]:
     """
-    Incremental scroll + click + extract + save loop.
+    Scroll + click + extract + save + remove loop.
 
-    In incremental mode: Stops when hitting the stop_marker.
-    In historical mode: Fast forwards past the resume_marker then extracts everyone.
+    Processes one tweet at a time:
+        1. Collect visible tweets on the bookmarks page
+        2. Navigate to the tweet detail page
+        3. If new: extract full content and save to JSON
+        4. Remove bookmark (click removeBookmark button)
+        5. Navigate back to the bookmarks page (fresh load)
+        6. Repeat until the bookmarks page is empty or limits reached
     """
     seen_ids = get_saved_ids(settings.output_path)
     if seen_ids:
@@ -112,6 +117,7 @@ async def scrape_bookmarks_loop(
     no_new_rounds = 0
     round_num = 0
     bookmarks_url = settings.bookmarks_url
+    processed_this_session: set[str] = set()  # Skip stale/cached tweets on page
     
     # State tracking for Historical Mode Resume
     found_resume_marker = False if resume_marker else True 
@@ -126,8 +132,8 @@ async def scrape_bookmarks_loop(
             logger.warning("Reached max runtime of {} minutes. Halting scrape.", settings.max_runtime_minutes)
             break
 
-        # Step 1: Find ALL visible tweets (not just new ones)
-        all_visible_tweets = await collect_visible_tweet_links(page, set())  # Empty set to get all tweets
+        # Step 1: Find visible tweets, excluding ones already handled this session
+        all_visible_tweets = await collect_visible_tweet_links(page, processed_this_session)
 
         if not all_visible_tweets:
             no_new_rounds += 1
@@ -138,9 +144,9 @@ async def scrape_bookmarks_loop(
             continue
 
         no_new_rounds = 0
-        logger.info("Found {} visible tweets to evaluate", len(all_visible_tweets))
+        logger.info("Found {} visible tweets to process", len(all_visible_tweets))
 
-        # Step 2: Process each tweet
+        # Step 2: Process each tweet ONE AT A TIME, returning to bookmarks after each
         for tweet_info in all_visible_tweets:
             tweet_id = tweet_info["tweet_id"]
 
@@ -155,7 +161,7 @@ async def scrape_bookmarks_loop(
                 else:
                     logger.debug("Skipping tweet {} (hunting for resume marker {})", tweet_id, resume_marker)
                 
-                # We always add it to seen_ids so we don't accidentally evaluate it again while scrolling
+                processed_this_session.add(tweet_id)
                 seen_ids.add(tweet_id)
                 continue
 
@@ -167,23 +173,18 @@ async def scrape_bookmarks_loop(
             # Human-like delay between tweet opens (2–6s based on limits)
             await asyncio.sleep(random.uniform(2.0, 6.0))
 
-            # Save scroll position before navigating to tweet
-            scroll_position_before_click = await page.evaluate("window.scrollY")
-
             if is_already_saved:
-                # Bookmark already exists in JSON - just remove from UI
+                # Bookmark already exists in JSON — navigate to tweet, remove bookmark
                 logger.info("📋 Bookmark {} already saved, removing from UI only", tweet_id)
                 try:
                     await page.goto(tweet_info["url"], wait_until="domcontentloaded", timeout=20000)
                     await page.wait_for_timeout(1500)
                     from extractor.tweet_extractor import remove_bookmark_from_ui
                     await remove_bookmark_from_ui(page)
-                    seen_ids.add(tweet_id)  # Mark as processed
                 except Exception as exc:
                     logger.warning("Failed to remove already-saved bookmark {}: {}", tweet_id, exc)
             else:
-                # New bookmark - extract, save, and remove from UI
-                # Exponential backoff retry logic for extracting
+                # New bookmark — extract, save, and remove from UI
                 bookmark = None
                 for attempt in range(3):
                     bookmark = await click_tweet_and_extract(page, tweet_info, bookmarks_url)
@@ -203,48 +204,35 @@ async def scrape_bookmarks_loop(
                         extracted_count += 1
                         seen_ids.add(tweet_id)
 
-                        # FEATURE 2: Checkpoint/Resume System (Save state after each processed bookmark)
+                        # Checkpoint: save state after each processed bookmark
                         state_file = Path(settings.state_dir) / (
                             settings.historical_state_file if mode == "historical" else settings.incremental_state_file
                         )
-                        # We pass the CURRENT tweet_id to be stored as the latest successful scrape
                         update_state_after_run(tweet_id, 1, state_path=state_file, mode=mode)
 
                     # Remove bookmark from UI after successful save
                     from extractor.tweet_extractor import remove_bookmark_from_ui
                     await remove_bookmark_from_ui(page)
-                else:
-                    seen_ids.add(tweet_id)
+
+            # Mark as handled this session (won't be re-processed even if page caches it)
+            processed_this_session.add(tweet_id)
+            seen_ids.add(tweet_id)
+
+            # Navigate back to bookmarks page (fresh load so removed tweets are gone)
+            logger.debug("↩ Returning to bookmarks page")
+            await page.goto(bookmarks_url, wait_until="domcontentloaded", timeout=30000)
+            try:
+                tweet_locator = page.locator('[data-testid="tweet"]')
+                await tweet_locator.first.wait_for(state="visible", timeout=15000)
+            except Exception:
+                pass  # Page may be empty if all bookmarks were removed
+            await page.wait_for_timeout(1000)
 
             if max_tweets > 0 and extracted_count >= max_tweets:
                 logger.info("📊 Reached max tweet limit ({}). Stopping.", max_tweets)
-                await page.goto(bookmarks_url, wait_until="domcontentloaded", timeout=30000)
                 return extracted_count, newest_tweet_id
 
-        # Step 3: Return to bookmarks and scroll for more
-        logger.info("↩ Returning to bookmarks page and triggering next scroll")
-        try:
-            await page.go_back(wait_until="domcontentloaded", timeout=30000)
-        except Exception:
-            logger.warning("go_back() failed, using page.goto() fallback")
-            await page.goto(bookmarks_url, wait_until="domcontentloaded", timeout=30000)
-
-        # Wait for tweets to load
-        try:
-            tweet_locator = page.locator('[data-testid="tweet"]')
-            await tweet_locator.first.wait_for(state="visible", timeout=15000)
-        except Exception:
-            logger.warning("Bookmarks page may have failed to reload")
-
-        # Restore scroll position to where we were before clicking the tweet
-        try:
-            await page.evaluate(f"window.scrollTo(0, {scroll_position_before_click})")
-            await page.wait_for_timeout(1000)  # Wait for content to render at restored position
-            logger.debug("Restored scroll position to {}", scroll_position_before_click)
-        except Exception:
-            logger.warning("Failed to restore scroll position, continuing with default scroll")
-
-        # Scroll past already-processed tweets
+        # Step 3: After processing all visible tweets, scroll for more
         await _scroll_page(page)
 
     return extracted_count, newest_tweet_id
