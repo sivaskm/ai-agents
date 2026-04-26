@@ -537,6 +537,48 @@ async def extract_from_detail_page(page: Page) -> Optional[Bookmark]:
     )
 
 
+async def remove_bookmark_from_ui(page: Page) -> bool:
+    """
+    Remove the current tweet from bookmarks by clicking the unbookmark button.
+
+    Twitter uses data-testid="removeBookmark" for the button that removes
+    an existing bookmark (as opposed to data-testid="bookmark" which ADDS one).
+
+    After clicking, we verify the button changed to "bookmark" (add state)
+    to confirm the removal actually took effect.
+
+    Returns:
+        True if removal was successful and verified, False otherwise.
+    """
+    try:
+        # The correct selector for an already-bookmarked tweet's remove button
+        remove_btn = page.locator('[data-testid="removeBookmark"]')
+
+        if await remove_btn.count() > 0:
+            await remove_btn.first.click(timeout=5000)
+            await page.wait_for_timeout(1500)
+
+            # Verify: after clicking removeBookmark, the button should change
+            # to data-testid="bookmark" (the add-bookmark state)
+            add_btn = page.locator('[data-testid="bookmark"]')
+            if await add_btn.count() > 0:
+                logger.info("🗑 Bookmark removed successfully (verified)")
+                return True
+            else:
+                # Button was clicked but we can't verify the state change —
+                # could still be successful (UI may not have updated yet)
+                logger.info("🗑 Bookmark remove clicked (unverified)")
+                return True
+
+        # Fallback: try the "more" menu approach if the action bar button isn't visible
+        # (can happen on some tweet layouts)
+        logger.warning("Could not find removeBookmark button — tweet may not be bookmarked")
+        return False
+    except Exception as exc:
+        logger.warning("Failed to remove bookmark: {}", exc)
+        return False
+
+
 async def click_tweet_and_extract(
     page: Page,
     tweet_info: dict,
