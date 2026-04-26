@@ -544,36 +544,66 @@ async def remove_bookmark_from_ui(page: Page) -> bool:
     Twitter uses data-testid="removeBookmark" for the button that removes
     an existing bookmark (as opposed to data-testid="bookmark" which ADDS one).
 
-    After clicking, we verify the button changed to "bookmark" (add state)
-    to confirm the removal actually took effect.
+    Steps:
+        1. Scroll to top so the main tweet's action bar is visible
+        2. Scope the search to the first tweet element to avoid clicking
+           removeBookmark on a reply tweet
+        3. Scroll the button into view and click it
+        4. Handle any confirmation dialog Twitter may show
+        5. Verify the button changed to "bookmark" (add state)
 
     Returns:
-        True if removal was successful and verified, False otherwise.
+        True if removal was successful, False otherwise.
     """
     try:
-        # The correct selector for an already-bookmarked tweet's remove button
-        remove_btn = page.locator('[data-testid="removeBookmark"]')
+        # Scroll to top — after thread extraction the page may be scrolled down
+        await page.evaluate("window.scrollTo(0, 0)")
+        await page.wait_for_timeout(500)
 
-        if await remove_btn.count() > 0:
-            await remove_btn.first.click(timeout=5000)
-            await page.wait_for_timeout(1500)
+        # Scope to the first tweet element (the main/bookmarked tweet)
+        first_tweet = page.locator('[data-testid="tweet"]').first
+        if await first_tweet.count() == 0:
+            logger.warning("No tweet element found on page")
+            return False
 
-            # Verify: after clicking removeBookmark, the button should change
-            # to data-testid="bookmark" (the add-bookmark state)
-            add_btn = page.locator('[data-testid="bookmark"]')
-            if await add_btn.count() > 0:
-                logger.info("🗑 Bookmark removed successfully (verified)")
-                return True
-            else:
-                # Button was clicked but we can't verify the state change —
-                # could still be successful (UI may not have updated yet)
-                logger.info("🗑 Bookmark remove clicked (unverified)")
-                return True
+        # Find the removeBookmark button within the first tweet
+        remove_btn = first_tweet.locator('[data-testid="removeBookmark"]')
 
-        # Fallback: try the "more" menu approach if the action bar button isn't visible
-        # (can happen on some tweet layouts)
-        logger.warning("Could not find removeBookmark button — tweet may not be bookmarked")
-        return False
+        if await remove_btn.count() == 0:
+            # Fallback: try page-level search (some layouts nest differently)
+            remove_btn = page.locator('[data-testid="removeBookmark"]').first
+            if await remove_btn.count() == 0:
+                logger.warning("Could not find removeBookmark button — tweet may not be bookmarked")
+                return False
+
+        # Scroll the button into view before clicking
+        await remove_btn.first.scroll_into_view_if_needed(timeout=3000)
+        await page.wait_for_timeout(300)
+
+        # Click the removeBookmark button
+        await remove_btn.first.click(timeout=5000)
+        await page.wait_for_timeout(1500)
+
+        # Handle any confirmation dialog (Twitter sometimes shows "Remove from Bookmarks?")
+        try:
+            confirm_btn = page.locator('[data-testid="confirmationSheetConfirm"]')
+            if await confirm_btn.count() > 0:
+                await confirm_btn.click(timeout=3000)
+                await page.wait_for_timeout(1000)
+                logger.debug("Dismissed confirmation dialog")
+        except Exception:
+            pass  # No confirmation dialog — that's fine
+
+        # Verify: after clicking, the button should change to data-testid="bookmark"
+        add_btn = first_tweet.locator('[data-testid="bookmark"]')
+        if await add_btn.count() > 0:
+            logger.info("🗑 Bookmark removed successfully (verified)")
+            return True
+        else:
+            # Button was clicked but state didn't visibly change — may still have worked
+            logger.info("🗑 Bookmark remove clicked (unverified)")
+            return True
+
     except Exception as exc:
         logger.warning("Failed to remove bookmark: {}", exc)
         return False
